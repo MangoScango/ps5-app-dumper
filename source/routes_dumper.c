@@ -76,6 +76,7 @@ static void json_queue(sb_t *sb, const queue_status_t *q)
         sb_puts(sb, ",\"title\":");
         sb_json_str(sb, q->items[i].title);
         sb_printf(sb, ",\"custom\":%s", q->items[i].custom ? "true" : "false");
+        sb_printf(sb, ",\"incomplete\":%s", q->items[i].allow_incomplete ? "true" : "false");
         sb_printf(sb, ",\"isDisc\":%s,\"discIn\":%s", q->items[i].is_disc ? "true" : "false",
                   title_on_disc(q->items[i].title_id) ? "true" : "false");
         sb_puts(sb, ",\"state\":");
@@ -265,15 +266,16 @@ static void handle_dump(whb_req_t *req)
     cfg_snapshot(&cfg);
 
     char err[160] = {0};
-    int rc = job_start(app, target, &cfg, whb_param_int(req, "overwrite", 0), err, sizeof(err));
+    int rc = job_start(app, target, &cfg, whb_param_int(req, "overwrite", 0),
+                       whb_param_int(req, "incomplete", 0), err, sizeof(err));
 
-    if (rc == JOB_ERR_EXISTS) {
-        /* the page asks, and comes back with overwrite=1 */
+    if (rc == JOB_ERR_EXISTS || rc == JOB_ERR_INCOMPLETE) {
+        /* the page asks, and comes back with overwrite=1 / incomplete=1 */
         sb_t sb;
         sb_init(&sb);
         sb_puts(&sb, "{\"error\":");
         sb_json_str(&sb, err);
-        sb_puts(&sb, ",\"exists\":true}");
+        sb_puts(&sb, rc == JOB_ERR_EXISTS ? ",\"exists\":true}" : ",\"incomplete\":true}");
         whb_send_sb(req, 409, &sb);
         return;
     }
@@ -423,6 +425,12 @@ static void handle_queue_start(whb_req_t *req)
     for (int i = 0; discs && i < count; i++)
         is_disc[i] = (strstr(discs, ids[i]) != NULL);
 
+    /* the titles the user agreed to dump with content missing */
+    const char *incomplete = whb_param(req, "incomplete", "");
+    int allow_incomplete[QUEUE_MAX + 1] = {0};
+    for (int i = 0; i < count; i++)
+        allow_incomplete[i] = (strstr(incomplete, ids[i]) != NULL);
+
     dumper_config_t cfg;
     cfg_snapshot(&cfg);
 
@@ -448,7 +456,7 @@ static void handle_queue_start(whb_req_t *req)
     }
 
     char err[160] = {0};
-    int rc = queue_start(ids, discs ? is_disc : NULL, item_cfg, count, target,
+    int rc = queue_start(ids, discs ? is_disc : NULL, allow_incomplete, item_cfg, count, target,
                          cfg.queue_delay, whb_param_int(req, "replace", 0),
                          &cfg, err, sizeof(err));
     free(own);

@@ -255,7 +255,7 @@ void job_dest_path(const char *mount, const dumper_config_t *cfg, char *out, siz
 }
 
 int job_start(const char *app_dir, const char *mount,
-              const dumper_config_t *cfg, int overwrite,
+              const dumper_config_t *cfg, int overwrite, int allow_incomplete,
               char *err, size_t err_size)
 {
     #define FAIL(msg) do { if (err && err_size) snprintf(err, err_size, "%s", msg); \
@@ -270,23 +270,35 @@ int job_start(const char *app_dir, const char *mount,
 
     /* A title can be played long before all of it is on the console; a dump
        made while blocks still arrive would have holes nobody sees until the
-       game is rebuilt from it. Refused for the web UI, the queue and
-       auto_start alike. A title that stands below 100 % for good - PlayGo
-       chunks the console never fetches - is dumped as it is, and the log
-       says so. */
+       game is rebuilt from it. The same state is reported for a finished
+       install whose optional content was never downloaded, which only the
+       user can tell apart - so it is refused unless the caller says the user
+       accepted it. auto_start never does. A title that stands below 100 %
+       for good - PlayGo chunks the console never fetches - is dumped as it
+       is, and the log says so. */
     {
         char id[16] = {0};
         snprintf(id, sizeof(id), "%.9s", app_dir);
         int installed = title_installed_percent(id);
-        if (installed >= 0 && installed < 100) {
-            if (title_install_pending(id)) {
-                char why[160];
-                snprintf(why, sizeof(why), "%s is still installing (%d %%) - the dump would be "
-                                           "incomplete, wait until it is done", id, installed);
-                FAIL(why);
+        playgo_status_t pg;
+        int have_pg = installed >= 0 && installed < 100 && title_playgo_status(id, &pg) == 0;
+        if (installed >= 0 && installed < 100 && title_install_pending(id)) {
+            if (!allow_incomplete) {
+                if (err && err_size)
+                    snprintf(err, err_size, "%s is missing content (%d %% is on the console): still "
+                                            "installing, or optional content not downloaded", id, installed);
+                pthread_mutex_unlock(&g_start_mtx);
+                return JOB_ERR_INCOMPLETE;
             }
-            playgo_status_t pg;
-            if (title_playgo_status(id, &pg) == 0)
+            if (have_pg)
+                write_log(g_log_path, "%s: %d of %d wanted chunks are here (%d %% of the package) - dumping "
+                                      "anyway as asked, the dump lacks the rest",
+                          id, pg.here, pg.wanted, installed);
+            else
+                write_log(g_log_path, "%s: %d %% of the package is here and more was still expected - "
+                                      "dumping anyway as asked, the dump lacks the rest", id, installed);
+        } else if (installed >= 0 && installed < 100) {
+            if (have_pg)
                 write_log(g_log_path, "%s: %d of %d chunks are wanted on this console and all are here; "
                                       "the other %d (other languages or regions) were never fetched - dumping what is there",
                           id, pg.wanted, pg.chunks, pg.chunks - pg.wanted);

@@ -665,9 +665,15 @@ function mediaTag(media, discIn){
 function mountTag(from){
   return from ? '<span class="tag mount" title="Runs from ' + esc(from) + ' instead of its package - nothing to dump">MOUNT</span>' : "";
 }
-/* A title can be played before all of it is on the console; a dump of it
-   would have holes. -1 / undefined: not known. */
+/* The console still lists content it wants for the title: an install in
+   progress, or optional content that was never downloaded. The two look the
+   same from here, so a dump is allowed once the user confirms. */
 function installing(t){ return !!t.installing; }
+function missingWhy(t){
+  var c = t.chunks || [];
+  return (c[1] ? c[2] + " of the " + c[1] + " chunks this console wants are here" : t.installed + " % of the package is here") +
+         ". It may still be installing, or optional content (an add-on, a language or texture pack) was never downloaded. A dump has only what is here";
+}
 /* below 100 with the install over: chunks the console never fetched */
 function partial(t){ return !t.installing && typeof t.installed === "number" && t.installed >= 0 && t.installed < 100; }
 function dlcTag(a){
@@ -683,7 +689,7 @@ function partialWhy(t){
               : t.installed + " % of the package is on the console and the rest never arrived - content the console did not fetch. A dump has what is here";
 }
 function installTag(t){
-  if(installing(t)) return '<span class="tag inst" title="Only ' + t.installed + ' % of this title is on the console yet - a dump now would be incomplete">INSTALLING ' + t.installed + '%</span>';
+  if(installing(t)) return '<span class="tag inst" title="' + missingWhy(t) + '">INCOMPLETE ' + t.installed + '%</span>';
   if(partial(t)) return '<span class="tag part" title="' + partialWhy(t) + '">' + t.installed + '% HERE</span>';
   return "";
 }
@@ -735,7 +741,7 @@ function renderApps(){
       '</span></div>' +
       '<div class="hero-bar">' +
         '<span class="hero-pick"' + (installing(a) ? ' style="color:var(--amber)"' : "") + '>' +
-          (installing(a) ? "still installing - not ready to dump" : partial(a) ? "ready to dump - " + (a.chunks && a.chunks[0] ? a.chunks[2] + " of " + a.chunks[0] + " chunks, all this console wants" : a.installed + " % of the package is here, the rest never arrived") : state.apps.length > 1 ? "tap to select" : "ready to dump") + '</span>' +
+          (installing(a) ? "content missing" : partial(a) ? "ready to dump - " + (a.chunks && a.chunks[0] ? a.chunks[2] + " of " + a.chunks[0] + " chunks, all this console wants" : a.installed + " % of the package is here, the rest never arrived") : state.apps.length > 1 ? "tap to select" : "ready to dump") + '</span>' +
         (known && state.canLaunch ? '<button class="mini" type="button" data-queue="' + esc(a.titleId) + '"></button>' : "") +
       '</div></div>';
   });
@@ -983,6 +989,7 @@ function queueIndex(titleId){
 function queueOnConsole(){ return !!(state.squeue && state.squeue.items.length); }
 function queueActive(){ return !!(state.squeue && state.squeue.active); }
 
+var incompleteQueueArm = null, incompleteQueueTimer;
 function toggleQueued(titleId){
   if(queueOnConsole()){ toast(queueActive() ? "A queue is running." : "Clear the last queue result first.", "bad"); return; }
 
@@ -992,16 +999,23 @@ function toggleQueued(titleId){
     if(state.queue.length >= QUEUE_MAX){ toast("A queue holds at most " + QUEUE_MAX + " titles.", "bad"); return; }
     var t = null;
     (state.library || []).forEach(function(l){ if(l.titleId === titleId) t = l; });
-    if(t && installing(t)){
-      toast(t.title + " is still installing (" + t.installed + " %) - it can be queued once it is done.", "bad");
-      return;
-    }
     if(t && t.mountedFrom){
       toast(t.title + " is a mount: it runs from " + t.mountedFrom + " instead of its package, so there is nothing to dump.", "bad");
       return;
     }
     if(!t) return;
-    state.queue.push({titleId: t.titleId, title: t.title, isPs4: t.isPs4, media: t.media});
+    /* a second tap within a few seconds is the confirmation */
+    var incomplete = installing(t);
+    if(incomplete && incompleteQueueArm !== t.titleId){
+      incompleteQueueArm = t.titleId;
+      clearTimeout(incompleteQueueTimer);
+      incompleteQueueTimer = setTimeout(function(){ incompleteQueueArm = null; }, 6000);
+      toast(t.title + " is missing content (" + t.installed + " % is on the console): still installing, or optional content " +
+            "never downloaded. Tap + Queue again to queue it anyway - the dump will have only what is here.", "bad");
+      return;
+    }
+    incompleteQueueArm = null;
+    state.queue.push({titleId: t.titleId, title: t.title, isPs4: t.isPs4, media: t.media, incomplete: incomplete || undefined});
   }
   storeQueue(); markQueued(); renderQueue(); updateAction();
 }
@@ -1043,6 +1057,7 @@ function queueRowHead(pos, q, cls, editAt){
     '<span class="meta"><span class="name">' + esc(q.title || q.titleId) + '</span>' +
     '<span class="id">' + tag + mtag +
       (q.own || q.custom ? '<span class="tag own" title="Dumped with settings of its own">CUSTOM</span>' : "") +
+      (q.incomplete ? '<span class="tag inst" title="Queued with content missing - the dump will have only what is on the console">INCOMPLETE</span>' : "") +
       (editAt === undefined ? "" : presenceTag(q.titleId)) +
       esc(q.titleId) + '</span>';
 }
@@ -1290,8 +1305,10 @@ function startQueue(){
   var ids = state.queue.map(function(q){ return q.titleId; });
   var discs = state.queue.filter(function(q){ return q.media === "disc"; })
                          .map(function(q){ return q.titleId; });
-  var request = {titles: ids.join(","), discs: discs.join(","), target: state.target,
-                 replace: state.queueReplace ? 1 : 0};
+  var incomplete = state.queue.filter(function(q){ return q.incomplete; })
+                              .map(function(q){ return q.titleId; });
+  var request = {titles: ids.join(","), discs: discs.join(","), incomplete: incomplete.join(","),
+                 target: state.target, replace: state.queueReplace ? 1 : 0};
   state.queue.forEach(function(q){ if(q.own) request["o_" + q.titleId] = ownSpec(q); });
   post("/api/queue/start", request).then(function(){
     state.queue = [];
@@ -1589,6 +1606,8 @@ function queueSummary(){
   var own = q.filter(function(t){ return t.own; }).length;
   var discs = q.filter(function(t){ return t.media === "disc"; }).length;
   if(own) notes.push(own + " with own settings");
+  var missing = q.filter(function(t){ return t.incomplete; }).length;
+  if(missing) notes.push(missing + " with content missing");
   if(discs > 1) notes.push(discs + " discs - it waits for each swap");
   var first = q[0], inTheWay = state.apps.some(function(a){ return a.titleId !== first.titleId; });
   if(inTheWay) notes.push("closes the running game");
@@ -1668,13 +1687,10 @@ function updateAction(){
 
   if(!go.classList.contains("arm")) go.textContent = "Start dump";
 
-  var ready = !!(app && state.target) && !(app && installing(app));
+  var ready = !!(app && state.target);
   go.disabled = !ready;
 
   if(state.launching)           sum.textContent = "Waiting for " + state.launching.title + " to start…";
-  else if(app && installing(app))
-    sum.innerHTML = "<b>" + esc(app.title) + '</b> <span style="color:var(--amber)">is still installing (' + app.installed +
-                    " %) - a dump now would be incomplete. It can be dumped once it is done.</span>";
   else if(!state.apps.length)   sum.textContent = "Start a title, or queue several.";
   else if(!app)                 sum.textContent = "Select an app.";
   else if(!state.targets.length)sum.textContent = "Plug in a USB drive.";
@@ -1689,6 +1705,9 @@ function updateAction(){
 
     if(size && drive && drive.freeBytes && size > drive.freeBytes)
       text += '<span style="color:var(--red)"> · needs ' + bytes(size - drive.freeBytes) + " more than the drive has free</span>";
+    if(installing(app))
+      text += '<span style="color:var(--amber)"> · content missing (' + app.installed + " % on the console): still installing, " +
+              "or optional content never downloaded. The dump will have only what is here.</span>";
 
     sum.innerHTML = text;
   }
@@ -1847,11 +1866,25 @@ function start(){
   state.samples = [];
 
   var go = $("btn-go"), request = {app: app.dir, target: state.target};
-  if(go.classList.contains("arm")) request.overwrite = 1;
+  var armed = go.classList.contains("arm") ? go.getAttribute("data-arm") : "";
   clearTimeout(overwriteArm);
   go.classList.remove("arm");
+  go.removeAttribute("data-arm");
+
+  /* each question is asked once per press: missing content first, then an
+     existing dump; a confirmed answer rides along with the next request */
+  if(armed === "incomplete") incompleteOk = app.dir;
+  if(installing(app) && incompleteOk !== app.dir){
+    armGo("incomplete", "Content missing - dump anyway?",
+          app.title + " is missing content (" + app.installed + " % is on the console): still installing, or optional " +
+          "content never downloaded. Press again to dump what is here.");
+    return;
+  }
+  if(incompleteOk === app.dir) request.incomplete = 1;
+  if(armed === "overwrite") request.overwrite = 1;
 
   post("/api/dump", request).then(function(d){
+    incompleteOk = null;
     whb.busy = true;
     state.job = d.job;
     renderJob(d.job);
@@ -1860,18 +1893,30 @@ function start(){
   }).catch(function(e){
     if(e.body && e.body.exists){
       /* a finished dump of this title is there - replacing it is a decision */
-      go.disabled = false;
-      go.classList.add("arm");
-      go.textContent = "Already dumped - replace it?";
-      toast(e.message + ". Press again to delete it and dump anew.", "bad");
-      overwriteArm = setTimeout(function(){ go.classList.remove("arm"); updateAction(); }, 6000);
+      armGo("overwrite", "Already dumped - replace it?", e.message + ". Press again to delete it and dump anew.");
+      return;
+    }
+    if(e.body && e.body.incomplete){
+      /* the console found content missing that this page did not know of yet */
+      incompleteOk = null;
+      armGo("incomplete", "Content missing - dump anyway?", e.message + ". Press again to dump what is here.");
       return;
     }
     toast(e.message, "bad");
     updateAction();
   });
 }
-var overwriteArm;
+var overwriteArm, incompleteOk = null;
+function armGo(kind, label, message){
+  var go = $("btn-go");
+  go.disabled = false;
+  go.classList.add("arm");
+  go.setAttribute("data-arm", kind);
+  go.textContent = label;
+  toast(message, "bad");
+  clearTimeout(overwriteArm);
+  overwriteArm = setTimeout(function(){ go.classList.remove("arm"); incompleteOk = null; updateAction(); }, 6000);
+}
 
 /* ---------------- dumps that were cut short ---------------- */
 var cutSig = null, cutArm;

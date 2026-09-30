@@ -43,6 +43,7 @@ typedef struct {
     char               title[128];
     int                is_disc;      /* wait for its disc before starting */
     int                custom;       /* dumped with settings of its own   */
+    int                allow_incomplete; /* dumped even with content missing */
     queue_item_state_t state;
     char               message[192];
 } queue_item_t;
@@ -68,6 +69,9 @@ typedef struct {
    disc is in the drive, however long the swap takes. NULL lets the scanner
    decide.
 
+   allow_incomplete marks, per title, one to dump even while the console
+   lists content as missing for it (see job_start). NULL: none.
+
    item_cfg gives, per title, the settings to dump it with; a NULL entry -
    or a NULL array - falls back to cfg.
 
@@ -77,6 +81,7 @@ typedef struct {
    runs with nobody there to ask. Returns 0 on success, -1 with the reason
    in err otherwise. */
 int  queue_start(const char *const *title_ids, const int *is_disc,
+                 const int *allow_incomplete,
                  const dumper_config_t *const *item_cfg, int count,
                  const char *mount, int settle_seconds, int replace_existing,
                  const dumper_config_t *cfg, char *err, size_t err_size);

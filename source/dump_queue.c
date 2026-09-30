@@ -279,7 +279,7 @@ static int process_item(int index)
     if (g_stop) return -1;
 
     int started = job_start(dir, snap.mount, &g_queue_cfg[index], snap.replace_existing,
-                            err, sizeof(err));
+                            snap.items[index].allow_incomplete, err, sizeof(err));
     if (started == JOB_ERR_EXISTS) {
         set_item(index, QITEM_SKIPPED, "%s - skipped", err);
         return 0;
@@ -377,6 +377,7 @@ int queue_is_active(void)
 }
 
 int queue_start(const char *const *title_ids, const int *is_disc,
+                const int *allow_incomplete,
                 const dumper_config_t *const *item_cfg, int count,
                 const char *mount, int settle_seconds, int replace_existing,
                 const dumper_config_t *cfg, char *err, size_t err_size)
@@ -415,6 +416,7 @@ int queue_start(const char *const *title_ids, const int *is_disc,
                 sizeof(item->title) - 1);
 
         item->custom = (item_cfg && item_cfg[i]) ? 1 : 0;
+        item->allow_incomplete = allow_incomplete ? (allow_incomplete[i] != 0) : 0;
         item->is_disc = is_disc ? (is_disc[i] != 0) : entry.is_disc;
         /* what the user knows about a title is worth keeping */
         if (item->is_disc) title_remember_disc(entry.title_id);
